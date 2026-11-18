@@ -1106,6 +1106,16 @@ func (n *NGINXController) createLuaConfig(cfg *ngx_config.Configuration) error {
 		HSTSMaxAge:              cfg.HSTSMaxAge,
 		HSTSIncludeSubdomains:   cfg.HSTSIncludeSubdomains,
 		HSTSPreload:             cfg.HSTSPreload,
+		GlobalThrottle: ngx_template.LuaGlobalThrottle{
+			Memcached: ngx_template.LuaMemcached{
+				Host:           cfg.GlobalRateLimitMemcachedHost,
+				Port:           cfg.GlobalRateLimitMemcachedPort,
+				ConnectTimeout: cfg.GlobalRateLimitMemcachedConnectTimeout,
+				MaxIdleTimeout: cfg.GlobalRateLimitMemcachedMaxIdleTimeout,
+				PoolSize:       cfg.GlobalRateLimitMemcachedPoolSize,
+			},
+			StatusCode: cfg.GlobalRateLimitStatusCode,
+		},
 	}
 	jsonCfg, err := json.Marshal(luaconfigs)
 	if err != nil {

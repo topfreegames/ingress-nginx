@@ -1,8 +1,11 @@
 local ngx_re_split = require("ngx.re").split
-local string_to_bool = require("util").string_to_bool
+local cjson = require("cjson.safe")
+local util = require("util")
+local string_to_bool = util.string_to_bool
 
 local certificate_configured_for_current_request =
   require("certificate").configured_for_current_request
+local global_throttle = require("global_throttle")
 
 local ngx = ngx
 local io = io
@@ -17,6 +20,39 @@ local _M = {}
 local seeds = {}
 -- general Nginx configuration passed by controller to be used in this module
 local config
+
+-- decoded per-location global throttle configs, keyed by the encoded value
+-- of $global_throttle; bounded by the number of distinct locations
+local global_throttle_configs = {}
+
+local function location_global_throttle()
+  local encoded = ngx.var.global_throttle
+  if not encoded or encoded == "" then
+    return nil
+  end
+
+  local cached = global_throttle_configs[encoded]
+  if cached then
+    return cached
+  end
+
+  local decoded = ngx.decode_base64(encoded)
+  local location_config = decoded and cjson.decode(decoded)
+  if not location_config then
+    ngx.log(ngx.ERR, "failed to decode global throttle config: ", encoded)
+    return nil
+  end
+
+  local key, err = util.parse_complex_value(location_config.key or "")
+  if not key then
+    ngx.log(ngx.ERR, "failed to parse global throttle key: ", err)
+    return nil
+  end
+  location_config.key = key
+
+  global_throttle_configs[encoded] = location_config
+  return location_config
+end
 
 local function get_seed_from_urandom()
   local seed
@@ -173,6 +209,10 @@ function _M.rewrite()
     return ngx_redirect(uri, config.http_redirect_code)
   end
 
+  local location_throttle = location_global_throttle()
+  if location_throttle then
+    global_throttle.throttle(config.global_throttle, location_throttle)
+  end
 end
 
 function _M.header()

@@ -209,18 +209,32 @@ The json format should follow what's expected by lua:
 */
 
 type LuaConfig struct {
-	EnableMetrics           bool           `json:"enable_metrics"`
-	ListenPorts             LuaListenPorts `json:"listen_ports"`
-	UseForwardedHeaders     bool           `json:"use_forwarded_headers"`
-	UseProxyProtocol        bool           `json:"use_proxy_protocol"`
-	IsSSLPassthroughEnabled bool           `json:"is_ssl_passthrough_enabled"`
-	HTTPRedirectCode        int            `json:"http_redirect_code"`
-	EnableOCSP              bool           `json:"enable_ocsp"`
-	MonitorBatchMaxSize     int            `json:"monitor_batch_max_size"`
-	HSTS                    bool           `json:"hsts"`
-	HSTSMaxAge              string         `json:"hsts_max_age"`
-	HSTSIncludeSubdomains   bool           `json:"hsts_include_subdomains"`
-	HSTSPreload             bool           `json:"hsts_preload"`
+	EnableMetrics           bool              `json:"enable_metrics"`
+	ListenPorts             LuaListenPorts    `json:"listen_ports"`
+	UseForwardedHeaders     bool              `json:"use_forwarded_headers"`
+	UseProxyProtocol        bool              `json:"use_proxy_protocol"`
+	IsSSLPassthroughEnabled bool              `json:"is_ssl_passthrough_enabled"`
+	HTTPRedirectCode        int               `json:"http_redirect_code"`
+	EnableOCSP              bool              `json:"enable_ocsp"`
+	MonitorBatchMaxSize     int               `json:"monitor_batch_max_size"`
+	HSTS                    bool              `json:"hsts"`
+	HSTSMaxAge              string            `json:"hsts_max_age"`
+	HSTSIncludeSubdomains   bool              `json:"hsts_include_subdomains"`
+	HSTSPreload             bool              `json:"hsts_preload"`
+	GlobalThrottle          LuaGlobalThrottle `json:"global_throttle"`
+}
+
+type LuaGlobalThrottle struct {
+	Memcached  LuaMemcached `json:"memcached"`
+	StatusCode int          `json:"status_code"`
+}
+
+type LuaMemcached struct {
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	ConnectTimeout int    `json:"connect_timeout"`
+	MaxIdleTimeout int    `json:"max_idle_timeout"`
+	PoolSize       int    `json:"pool_size"`
 }
 
 type LuaListenPorts struct {
@@ -453,7 +467,43 @@ func locationConfigForLua(l, a interface{}) string {
 		isLocationInLocationList(l, all.Cfg.NoTLSRedirectLocations),
 		location.Rewrite.PreserveTrailingSlash,
 		location.UsePortInRedirects,
-	)
+	) + globalThrottleForLua(location)
+}
+
+// LuaLocationGlobalThrottle is the per-location global rate limit configuration
+// read by global_throttle.lua.
+type LuaLocationGlobalThrottle struct {
+	Namespace    string   `json:"namespace"`
+	Limit        int      `json:"limit"`
+	WindowSize   int      `json:"window_size"`
+	Key          string   `json:"key"`
+	IgnoredCIDRs []string `json:"ignored_cidrs"`
+}
+
+// globalThrottleForLua returns a "set $global_throttle" directive with the
+// location's global rate limit configuration as base64-encoded JSON. The
+// encoding keeps NGINX from interpolating variables in the key.
+func globalThrottleForLua(location *ingress.Location) string {
+	if location.GlobalRateLimit.Limit == 0 || location.GlobalRateLimit.WindowSize == 0 {
+		return ""
+	}
+
+	ignoredCIDRs := append([]string{}, location.GlobalRateLimit.IgnoredCIDRs...)
+	sort.Strings(ignoredCIDRs)
+
+	b, err := json.Marshal(LuaLocationGlobalThrottle{
+		Namespace:    location.GlobalRateLimit.Namespace,
+		Limit:        location.GlobalRateLimit.Limit,
+		WindowSize:   location.GlobalRateLimit.WindowSize,
+		Key:          location.GlobalRateLimit.Key,
+		IgnoredCIDRs: ignoredCIDRs,
+	})
+	if err != nil {
+		klog.Errorf("unexpected error: %v", err)
+		return ""
+	}
+
+	return fmt.Sprintf("set $global_throttle %q;\n", base64.StdEncoding.EncodeToString(b))
 }
 
 // buildResolvers returns the resolvers reading the /etc/resolv.conf file

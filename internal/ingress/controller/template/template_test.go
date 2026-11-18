@@ -2058,6 +2058,36 @@ func TestBuildServerName(t *testing.T) {
 	}
 }
 
+func TestGlobalThrottleForLua(t *testing.T) {
+	location := &ingress.Location{}
+	if got := globalThrottleForLua(location); got != "" {
+		t.Errorf("expected no directive when global rate limit is disabled, got %q", got)
+	}
+
+	location.GlobalRateLimit.Namespace = "ns"
+	location.GlobalRateLimit.Limit = 5
+	location.GlobalRateLimit.WindowSize = 120
+	location.GlobalRateLimit.Key = "${remote_addr}$http_x_api_client"
+	location.GlobalRateLimit.IgnoredCIDRs = []string{"234.234.234.0/24", "192.168.1.1"}
+
+	got := globalThrottleForLua(location)
+	prefix, suffix := `set $global_throttle "`, "\";\n"
+	if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, suffix) {
+		t.Fatalf("unexpected directive %q", got)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(got, prefix), suffix))
+	if err != nil {
+		t.Fatalf("unexpected error decoding %q: %v", got, err)
+	}
+
+	expected := `{"namespace":"ns","limit":5,"window_size":120,"key":"${remote_addr}$http_x_api_client",` +
+		`"ignored_cidrs":["192.168.1.1","234.234.234.0/24"]}`
+	if string(decoded) != expected {
+		t.Errorf("expected %v but returned %v", expected, string(decoded))
+	}
+}
+
 func TestCleanConf(t *testing.T) {
 	testDataDir, err := getTestDataDir()
 	if err != nil {

@@ -39,6 +39,7 @@ import (
 	"k8s.io/ingress-nginx/internal/ingress/annotations/defaultbackend"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/disableproxyintercepterrors"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/fastcgi"
+	"k8s.io/ingress-nginx/internal/ingress/annotations/globalratelimit"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/http2pushpreload"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/ipallowlist"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/ipdenylist"
@@ -97,6 +98,7 @@ type Ingress struct {
 	Proxy                       proxy.Config
 	ProxySSL                    proxyssl.Config
 	RateLimit                   ratelimit.Config
+	GlobalRateLimit             globalratelimit.Config
 	Redirect                    redirect.Config
 	Rewrite                     rewrite.Config
 	Satisfy                     string
@@ -145,6 +147,7 @@ func NewAnnotationFactory(cfg resolver.Resolver) map[string]parser.IngressAnnota
 		"Proxy":                       proxy.NewParser(cfg),
 		"ProxySSL":                    proxyssl.NewParser(cfg),
 		"RateLimit":                   ratelimit.NewParser(cfg),
+		"GlobalRateLimit":             globalratelimit.NewParser(cfg),
 		"Redirect":                    redirect.NewParser(cfg),
 		"Rewrite":                     rewrite.NewParser(cfg),
 		"Satisfy":                     satisfy.NewParser(cfg),
