@@ -1,0 +1,207 @@
+name: TFG Images
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - images/nginx/**
+      - TAG
+      - NGINX_BASE
+  workflow_dispatch:
+    inputs:
+      nginx:
+        description: Build the NGINX base image
+        type: boolean
+        default: false
+      controller:
+        description: Build the controller image
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tfg-images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/ingress-nginx
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      nginx: ${{ steps.filter.outputs.nginx == 'true' || inputs.nginx == true }}
+      controller: ${{ steps.filter.outputs.controller == 'true' || inputs.controller == true }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Filter
+        id: filter
+        if: github.event_name == 'push'
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            nginx:
+              - 'images/nginx/**'
+            controller:
+              - 'TAG'
+              - 'NGINX_BASE'
+
+  # NGINX and its modules compile from source, which is too slow under QEMU.
+  # Build each architecture on a native runner, then merge the digests.
+  nginx-build:
+    needs: changes
+    if: needs.changes.outputs.nginx == 'true'
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        run: |
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --output "type=image,name=${REGISTRY}/nginx,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            images/nginx/rootfs
+          mkdir -p digests
+          digest="$(jq -r '."containerimage.digest"' metadata.json)"
+          touch "digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: nginx-digest-${{ strategy.job-index }}
+          path: digests/*
+          retention-days: 1
+
+  nginx-merge:
+    needs: nginx-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.merge.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nginx-digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        id: merge
+        run: |
+          tag="$(cat images/nginx/TAG)"
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/nginx:${tag}" \
+            $(printf "${REGISTRY}/nginx@sha256:%s " $(ls digests))
+          digest="$(docker buildx imagetools inspect "${REGISTRY}/nginx:${tag}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "image=${REGISTRY}/nginx:${tag}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${REGISTRY}/nginx:${tag}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Set NGINX_BASE to this value to use it in the controller." >> "$GITHUB_STEP_SUMMARY"
+
+  controller:
+    needs:
+      - changes
+      - nginx-merge
+    # Runs after nginx-merge when both images build, or alone when only the
+    # controller builds.
+    if: >-
+      always() &&
+      needs.changes.outputs.controller == 'true' &&
+      (needs.nginx-merge.result == 'success' || needs.nginx-merge.result == 'skipped')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: GOLANG_VERSION
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binaries
+        env:
+          PKG: k8s.io/ingress-nginx
+          REPO_INFO: ${{ github.server_url }}/${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          export TAG="$(cat TAG)"
+          for arch in amd64 arm64; do
+            ARCH="${arch}" build/build.sh
+          done
+
+      - name: Build and push image
+        env:
+          BUILT_BASE: ${{ needs.nginx-merge.outputs.image }}
+        run: |
+          tag="$(cat TAG)"
+          base="${BUILT_BASE:-$(cat NGINX_BASE)}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg BASE_IMAGE="${base}" \
+            --build-arg VERSION="${tag}" \
+            --build-arg COMMIT_SHA="${{ github.sha }}" \
+            --build-arg BUILD_ID="${{ github.run_id }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --tag "${REGISTRY}/controller:${tag}" \
+            --push \
+            rootfs
+          echo "Pushed ${REGISTRY}/controller:${tag} on base ${base}" >> "$GITHUB_STEP_SUMMARY"
