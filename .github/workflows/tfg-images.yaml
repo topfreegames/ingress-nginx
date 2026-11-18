@@ -185,7 +185,7 @@ jobs:
         run: |
           export TAG="$(cat TAG)"
           for arch in amd64 arm64; do
-            ARCH="${arch}" build/build.sh
+            ARCH="${arch}" bash build/build.sh
           done
 
       - name: Build and push image
