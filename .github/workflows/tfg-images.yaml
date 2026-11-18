@@ -1,0 +1,71 @@
+name: TFG Images (1.11)
+
+# The NGINX base image is built from main. This branch only builds the
+# 1.11 controller on top of the base image named in NGINX_BASE.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tfg-images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/ingress-nginx
+
+jobs:
+  controller:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: GOLANG_VERSION
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binaries
+        env:
+          PKG: k8s.io/ingress-nginx
+          REPO_INFO: ${{ github.server_url }}/${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          export TAG="$(cat TAG)"
+          for arch in amd64 arm64; do
+            ARCH="${arch}" build/build.sh
+          done
+
+      - name: Build and push image
+        run: |
+          tag="$(cat TAG)"
+          base="$(cat NGINX_BASE)"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg BASE_IMAGE="${base}" \
+            --build-arg VERSION="${tag}" \
+            --build-arg COMMIT_SHA="${{ github.sha }}" \
+            --build-arg BUILD_ID="${{ github.run_id }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --tag "${REGISTRY}/controller:${tag}" \
+            --push \
+            rootfs
+          echo "Pushed ${REGISTRY}/controller:${tag} on base ${base}" >> "$GITHUB_STEP_SUMMARY"
